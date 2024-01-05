@@ -16,7 +16,7 @@ fn decode_bencoded_value(encoded_value: &str) -> serde_json::Value {
         return serde_json::Value::String(string.to_string());
     } else if encoded_value.chars().next().unwrap() == 'i' {
         let end_index = encoded_value.find('e').unwrap();
-        let number_string = &encoded_value[..end_index];
+        let number_string = &encoded_value[1..end_index];
         let number = serde_json::Number::from_str(number_string).unwrap();
         return serde_json::Value::Number(number);
     } else {
