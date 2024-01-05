@@ -1,8 +1,5 @@
-use serde_json;
+use serde_json::{self, Map};
 use std::{env, str::FromStr};
-
-// Available if you need it!
-// use serde_bencode
 
 fn decode_bencoded_string(encoded_value: &str) -> (serde_json::Value, &str) {
     let colon_index = encoded_value.find(':').unwrap();
@@ -15,23 +12,18 @@ fn decode_bencoded_integer(encoded_value: &str) -> (serde_json::Value, &str) {
     let end_index = encoded_value.find('e').unwrap();
     let number_string = &encoded_value[1..end_index];
     let number = serde_json::Number::from_str(number_string).unwrap();
-    return (serde_json::Value::Number(number), &encoded_value[end_index+1..]);
+    return (serde_json::Value::Number(number), &encoded_value[end_index + 1..]);
 }
 fn decode_bencoded_list(encoded_value: &str) -> (serde_json::Value, &str) {
     let mut list:Vec<serde_json::Value> = Vec::new();
     let mut encoded_value = encoded_value;
     loop {
-        let first_char = match encoded_value.chars().next() {
-            Some(c) => c,
+        match encoded_value.chars().next() { 
+            Some(c) if c == 'e' => {encoded_value = &encoded_value[1..]; break},
+            Some(_) => (),
             None => break,
         };
-        let (value, remaining_string) = match first_char {
-            c  if c.is_digit(10) => decode_bencoded_string(encoded_value),
-            'i' => decode_bencoded_integer(encoded_value),
-            'l' => decode_bencoded_list(&encoded_value[1..]),
-            'e' => {encoded_value = &encoded_value[1..]; break},
-            _ => panic!("Unhandled encoded value: {}", encoded_value)
-        };
+        let (value, remaining_string) = decode_bencoded_value(encoded_value);
         list.push(value);
         encoded_value = remaining_string;
 
@@ -39,15 +31,35 @@ fn decode_bencoded_list(encoded_value: &str) -> (serde_json::Value, &str) {
     return (serde_json::Value::Array(list), encoded_value);
 }
 
+fn decode_bencoded_dictionary(encoded_value: &str) -> (serde_json::Value, &str) {
+    let mut dictionary = Map::new();
+    let mut encoded_value = encoded_value; 
+    loop {
+        match encoded_value.chars().next() {
+            Some(c) if c == 'e' => {encoded_value = &encoded_value[1..]; break},
+            Some(_) => (),
+            None => break,
+        }
+        let (key, remaining_string) = decode_bencoded_string(encoded_value);
+        let (data, remaining_string) = decode_bencoded_value(remaining_string);
+        dictionary.insert(key.to_string(), data);
+        encoded_value = remaining_string;
+    }
+    return (serde_json::Value::Object(dictionary), encoded_value);
+}
+
 #[allow(dead_code)]
-fn decode_bencoded_value(encoded_value: &str) -> serde_json::Value {
+fn decode_bencoded_value(encoded_value: &str) -> (serde_json::Value, &str) {
     return match encoded_value.chars().next().unwrap() {
-        c  if c.is_digit(10) => decode_bencoded_string(encoded_value).0,
-        'i' => decode_bencoded_integer(encoded_value).0,
-        'l' => decode_bencoded_list(&encoded_value[1..]).0,
+        c  if c.is_digit(10) => decode_bencoded_string(encoded_value),
+        'i' => decode_bencoded_integer(encoded_value),
+        'l' => decode_bencoded_list(&encoded_value[1..]),
+        'd' => decode_bencoded_dictionary(&encoded_value[1..]),
         _ => panic!("Unhandled encoded value: {}", encoded_value)
     };
 }
+
+
 
 // Usage: your_bittorrent.sh decode "<encoded_value>"
 fn main() {
@@ -60,7 +72,7 @@ fn main() {
 
         // Uncomment this block to pass the first stage
         let encoded_value = &args[2];
-        let decoded_value = decode_bencoded_value(encoded_value);
+        let decoded_value = decode_bencoded_value(encoded_value).0;
         println!("{}", decoded_value.to_string());
     } else {
         println!("unknown command: {}", args[1])
