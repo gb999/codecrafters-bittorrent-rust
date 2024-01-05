@@ -1,6 +1,8 @@
+use serde_bytes::ByteBuf;
 use serde_json::{self, Map, Value, Number};
 use std::{env, str::FromStr};
 use serde_derive::{Serialize, Deserialize};
+use sha1::{Sha1, Digest};
 
 
 fn decode_bencoded_string(encoded_value: &str) -> (Value, &str) {
@@ -71,8 +73,11 @@ struct Torrent {
 struct TorrentInfo {
     length: u32,
     name: String, 
-    
+    #[serde(rename = "piece length")]
+    piece_length: u32,
+    pieces: ByteBuf
 }
+
 
 
 // Usage: your_bittorrent.sh decode "<encoded_value>"
@@ -95,10 +100,14 @@ fn main() {
                 Ok(contents) => contents,
                 Err(_) => {eprintln!("No such file."); return}
             };
-            
+
             let torrent = serde_bencode::from_bytes::<Torrent>(&contents).unwrap();
-            println!("Tracker URL: {}",torrent.announce);
+            let bytes = serde_bencode::to_bytes(&torrent.info).unwrap();
+            let hash = hex::encode(Sha1::digest(bytes));
+            
+            println!("Tracker URL: {}", torrent.announce);
             println!("Length: {}", torrent.info.length);
+            println!("Info Hash: {}", hash)
         },
         _ => println!("unknown command: {}", args[1])
     } 
