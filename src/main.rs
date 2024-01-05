@@ -130,7 +130,7 @@ fn main() {
                 format!("{}?info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&compact={}", 
                 torrent.announce, 
                 urlencoding::encode_binary(&hash), 
-                18693067284950604732, // peer_id
+                18693067284950604732 as i128, // peer_id
                 6881, // port
                 0, // uploaded
                 0, // downloaded
