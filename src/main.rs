@@ -42,7 +42,7 @@ fn decode_bencoded_dictionary(encoded_value: &str) -> (serde_json::Value, &str) 
         }
         let (key, remaining_string) = decode_bencoded_string(encoded_value);
         let (data, remaining_string) = decode_bencoded_value(remaining_string);
-        dictionary.insert(key.to_string(), data);
+        dictionary.insert(String::from(key.as_str().unwrap()), data);
         encoded_value = remaining_string;
     }
     return (serde_json::Value::Object(dictionary), encoded_value);
