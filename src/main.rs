@@ -78,7 +78,14 @@ struct TorrentInfo {
     pieces: ByteBuf
 }
 
+fn torrent_from_file(file_path: &str) -> Option<Torrent> {
+    let contents = match std::fs::read(file_path) {
+        Ok(contents) => contents,
+        Err(_) => {eprintln!("No such file."); return None}
+    };
 
+    return Some(serde_bencode::from_bytes::<Torrent>(&contents).unwrap());
+}
 
 // Usage: your_bittorrent.sh decode "<encoded_value>"
 fn main() {
@@ -96,12 +103,8 @@ fn main() {
         },
         "info" => {
             let file_path = &args[2];
-            let contents = match std::fs::read(file_path) {
-                Ok(contents) => contents,
-                Err(_) => {eprintln!("No such file."); return}
-            };
+            let torrent = torrent_from_file(file_path).unwrap();
 
-            let torrent = serde_bencode::from_bytes::<Torrent>(&contents).unwrap();
             let bytes = serde_bencode::to_bytes(&torrent.info).unwrap();
             let hash = hex::encode(Sha1::digest(bytes));
             
@@ -116,6 +119,47 @@ fn main() {
             }
             
         },
+        "peers" => {
+            let file_path = &args[2];
+            let torrent = torrent_from_file(file_path).unwrap();
+
+            let bytes = serde_bencode::to_bytes(&torrent.info).unwrap();
+            let hash = Sha1::digest(bytes);
+
+            let res = reqwest::blocking::get(
+                format!("{}?info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&compact={}", 
+                torrent.announce, 
+                urlencoding::encode_binary(&hash), 
+                18693067284950604732, // peer_id
+                6881, // port
+                0, // uploaded
+                0, // downloaded
+                torrent.info.length,
+                1 // compact
+                )
+            ).unwrap();
+            let res = serde_bencode::from_bytes::<TrackerResponse>(&res.bytes().unwrap()).unwrap();
+
+            for peer in res.peers.chunks(6) {
+                let ip_addr = format!("{}.{}.{}.{}:{}",
+                        peer[0],
+                        peer[1],
+                        peer[2],
+                        peer[3],
+                        (peer[4] as u16) << 8 | peer[5] as u16
+                );
+                println!("{ip_addr}");
+            }
+        }
         _ => println!("unknown command: {}", args[1])
     } 
+}
+
+
+#[derive(Serialize, Deserialize, Debug)]
+struct TrackerResponse {
+    // complete: u32,
+    // incomplete: u32,
+    interval: u32,
+    peers: ByteBuf
 }
