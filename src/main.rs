@@ -1,6 +1,6 @@
 use serde_bytes::ByteBuf;
 use serde_json::{self, Map, Value, Number};
-use std::{env, str::FromStr, io::{Write, Read}};
+use std::{env, str::FromStr, io::{Write, Read, self, Error}, net::TcpStream, fs::{OpenOptions, self}};
 use serde_derive::{Serialize, Deserialize};
 use sha1::{Sha1, Digest};
 
@@ -69,6 +69,27 @@ struct Torrent {
     info: TorrentInfo,
 }
 
+impl Torrent {
+    fn from_file(file_path: &String) -> Result<Self, io::Error> {
+        let contents = match std::fs::read(file_path) {
+            Ok(contents) => contents,
+            Err(error) => return Err(Error::new(io::ErrorKind::NotFound, error))
+        };
+        return Ok(serde_bencode::from_bytes::<Torrent>(&contents).unwrap());
+    }
+    fn print_info(&self) {
+        println!("Tracker URL: {}", self.announce);
+        println!("Length: {}", self.info.length);
+        println!("Info Hash: {}", hex::encode(self.info.get_sha1_hash()));
+        println!("Piece Length: {}", self.info.piece_length);
+        println!("Piece Hashes:");
+        for chunk in self.info.pieces.chunks(20) {
+            let hash = hex::encode(chunk);
+            println!("{hash}");
+        }
+    }
+}
+
 #[derive(Serialize, Deserialize)]
 struct TorrentInfo {
     length: u32,
@@ -78,106 +99,177 @@ struct TorrentInfo {
     pieces: ByteBuf
 }
 
-fn torrent_from_file(file_path: &str) -> Option<Torrent> {
-    let contents = match std::fs::read(file_path) {
-        Ok(contents) => contents,
-        Err(_) => {eprintln!("No such file."); return None}
-    };
-
-    return Some(serde_bencode::from_bytes::<Torrent>(&contents).unwrap());
+impl TorrentInfo {
+    fn get_sha1_hash(&self) -> Vec<u8> {
+        let bytes = serde_bencode::to_bytes(&self).unwrap();
+        Sha1::digest(bytes).to_vec()
+    }
 }
 
 // Usage: your_bittorrent.sh decode "<encoded_value>"
+fn decode(encoded_value: &String) {
+    eprintln!("Logs from your program will appear here!");
+    let decoded_value = decode_bencoded_value(encoded_value).0;
+    println!("{}", decoded_value.to_string());
+}
+
+fn info(file_path: &String) {
+    Torrent::from_file(file_path)
+        .unwrap()
+        .print_info();
+}
+
+fn get_peer_list(torrent: &Torrent) -> TrackerResponse {
+    let res = reqwest::blocking::get(
+        format!("{}?info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&compact={}", 
+        torrent.announce, 
+        urlencoding::encode_binary(&torrent.info.get_sha1_hash()), 
+        18693067284950604732 as i128, // peer_id
+        6881, // port
+        0, // uploaded
+        0, // downloaded
+        torrent.info.length,
+        1 // compact
+        )
+    ).unwrap();
+    serde_bencode::from_bytes::<TrackerResponse>(&res.bytes().unwrap()).unwrap()
+}
+ 
+fn peers(file_path: &String) {
+    let torrent = Torrent::from_file(file_path).unwrap();
+    let res = get_peer_list(&torrent);
+    res.print_peers();
+}
+
+fn perform_handshake(torrent: &Torrent, peer_addr: &String) -> TcpStream {
+    let handshake = HandShake {
+        length: [19],
+        protocol: *b"BitTorrent protocol",
+        reserved: [0; 8],
+        info_hash: torrent.info.get_sha1_hash().try_into().unwrap(),
+        peer_id: [0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9]
+    };
+    let mut stream = std::net::TcpStream::connect(peer_addr).unwrap();
+    stream.write(&handshake.as_bytes()).unwrap();
+    return stream;
+}
+fn read_peer_id(stream: &mut TcpStream) -> String {
+    let mut buf = [0u8; 68];
+    stream.read(&mut buf).unwrap();
+    hex::encode(&buf[48..])
+}
+fn handshake(file_path: &String, peer_addr: &String) {
+    let torrent = Torrent::from_file(file_path).unwrap();
+    let mut stream = perform_handshake(&torrent, peer_addr);
+    let peer_id = read_peer_id(&mut stream);
+    println!("Peer ID: {}", peer_id);
+}
+
 fn main() {
     let args: Vec<String> = env::args().collect();
     let command = &args[1];
-
     match command.as_str() {
-        "decode" => {
-            // You can use print statements as follows for debugging, they'll be visible when running tests.
-            eprintln!("Logs from your program will appear here!");
-    
-            let encoded_value = &args[2];
-            let decoded_value = decode_bencoded_value(encoded_value).0;
-            println!("{}", decoded_value.to_string());
-        },
-        "info" => {
-            let file_path = &args[2];
-            let torrent = torrent_from_file(file_path).unwrap();
+        "decode" => decode(&args[2]),
+        "info" => info(&args[2]),
+        "peers" => peers(&args[2]),
+        "handshake" => handshake(&args[2], &args[3]),
+        "download_piece" => {
+            let download_location = &args[3];
+            let file_path = &args[4];
+            let piece_index: u32 = args[5].parse().unwrap();
+            let torrent = Torrent::from_file(file_path).unwrap();
+            let peer_addresses = get_peer_list(&torrent).get_peer_addresses();
+            let peer_address = peer_addresses.first().unwrap();
+            let mut stream = perform_handshake(&torrent, peer_address);
+            read_peer_id(&mut stream);
+            PeerMessage::read_message(&mut stream); // Read bitfield message
+            send_interested(&mut stream);
+            PeerMessage::read_message(&mut stream); // Read unchoke message
 
-            let bytes = serde_bencode::to_bytes(&torrent.info).unwrap();
-            let hash = hex::encode(Sha1::digest(bytes));
-            
-            println!("Tracker URL: {}", torrent.announce);
-            println!("Length: {}", torrent.info.length);
-            println!("Info Hash: {}", hash);
-            println!("Piece Length: {}", torrent.info.piece_length);
-            println!("Piece Hashes:");
-            for chunk in torrent.info.pieces.chunks(20) {
-                let hash = hex::encode(chunk);
-                println!("{hash}");
+
+            let mut piece_data: Vec<u8> = Vec::new(); 
+            let mut remaining_bytes = torrent.info.piece_length;
+            let mut block_index = 0;
+            while remaining_bytes != 0 {
+                let mut block_length = 16 * 1024;
+                if remaining_bytes < 16 * 1024 {
+                    block_length = remaining_bytes;
+                }
+                send_request_piece(&mut stream, piece_index, block_index * (16 * 1024), block_length);
+                remaining_bytes -= block_length;
+                block_index += 1;
+
+                if let PeerMessage::Piece {index:_, begin:_, block} = PeerMessage::read_message(&mut stream) {
+                    piece_data.extend(block);
+                    // Check integrity
+                } else {panic!("Invalid response.") ; }
             }
-            
+            fs::write(download_location, piece_data).unwrap();
+           
         },
-        "peers" => {
-            let file_path = &args[2];
-            let torrent = torrent_from_file(file_path).unwrap();
-
-            let bytes = serde_bencode::to_bytes(&torrent.info).unwrap();
-            let hash = Sha1::digest(bytes);
-
-            let res = reqwest::blocking::get(
-                format!("{}?info_hash={}&peer_id={}&port={}&uploaded={}&downloaded={}&left={}&compact={}", 
-                torrent.announce, 
-                urlencoding::encode_binary(&hash), 
-                18693067284950604732 as i128, // peer_id
-                6881, // port
-                0, // uploaded
-                0, // downloaded
-                torrent.info.length,
-                1 // compact
-                )
-            ).unwrap();
-            let res = serde_bencode::from_bytes::<TrackerResponse>(&res.bytes().unwrap()).unwrap();
-
-            for peer in res.peers.chunks(6) {
-                let ip_addr = format!("{}.{}.{}.{}:{}",
-                        peer[0],
-                        peer[1],
-                        peer[2],
-                        peer[3],
-                        (peer[4] as u16) << 8 | peer[5] as u16
-                );
-                println!("{ip_addr}");
-            }
-        },
-        "handshake" => { 
-            let file_path = &args[2];
-            let torrent = torrent_from_file(file_path).unwrap();
-
-            let peer_addr = &args[3];
-
-            let bytes = serde_bencode::to_bytes(&torrent.info).unwrap();
-            let info_hash = Sha1::digest(bytes);
-        
-
-            let handshake = HandShake {
-                length: [19],
-                protocol: *b"BitTorrent protocol",
-                reserved: [0; 8],
-                info_hash: info_hash.into(),
-                peer_id: [0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9]
-            };
-            let mut stream = std::net::TcpStream::connect(peer_addr).unwrap();
-            stream.write(&handshake.as_bytes()).unwrap();
-            let mut buf = [0u8; 68];
-            stream.read(&mut buf).unwrap();
-            println!("Peer ID: {}", hex::encode(&buf[48..]));
-        }
         _ => println!("unknown command: {}", args[1])
     } 
 }
+enum PeerMessage {
+    BitField,
+    Interested,
+    Unchoke,
+    Request,
+    Piece {
+        index: u32,
+        begin: u32,
+        block: Vec<u8>
+    }
+}
 
+impl PeerMessage {
+    fn read_message(stream: &mut TcpStream) -> Self {
+        let mut message_size: [u8; 4] = [0u8; 4];
+        stream.read_exact(&mut message_size).unwrap();
+        let message_size = u32::from_be_bytes(message_size);
+        let mut buf = vec![0; message_size as usize];
+        stream.read_exact(&mut buf).unwrap();
+        let message_id = buf[0];
+        match message_id {
+            5 => {
+                // Read and ignore payload
+                PeerMessage::BitField
+            },
+            1 => {
+                PeerMessage::Unchoke
+            },
+            7 => {
+                let mut index = [0u8; 4];
+                index.copy_from_slice(&buf[0..4]);
+                let mut begin = [0u8; 4];
+                begin.copy_from_slice(&buf[4..8]);
+                PeerMessage::Piece {
+                    index: u32::from_be_bytes(index),
+                    begin: u32::from_be_bytes(begin),
+                    block: (&buf[8..]).to_vec()
+                }
+            }
+            _=> panic!("Unexpected message")
+        }
+    }
+
+}
+
+fn send_interested(stream: &mut TcpStream) {
+    let mut buf = [0; 5]; 
+    buf[0..4].copy_from_slice(&1u32.to_be_bytes()); // 1 is message length
+    buf[4] = 2; // message id 2 = interested   
+    stream.write_all(&buf).unwrap();
+}
+fn send_request_piece(stream: &mut TcpStream, index:u32, begin:u32, length:u32) {
+    let mut buf =  [0u8; 17];
+    buf[0..4].copy_from_slice(&(1 + 3 * 4u32).to_be_bytes()); // message length 
+    buf[4] = 6; // message id 6 = request
+    buf[5..9].copy_from_slice(&index.to_be_bytes()); // index 
+    buf[9..13].copy_from_slice(&begin.to_be_bytes()); // begin
+    buf[13..17].copy_from_slice(&length.to_be_bytes()); // length 
+    stream.write_all(&buf).unwrap();
+}
 
 #[derive(Serialize, Deserialize, Debug)]
 struct TrackerResponse {
@@ -185,6 +277,28 @@ struct TrackerResponse {
     // incomplete: u32,
     interval: u32,
     peers: ByteBuf
+}
+
+impl TrackerResponse {
+    fn get_peer_addresses(&self) -> Vec<String> {
+        let mut res = Vec::new();
+        for peer in self.peers.chunks(6) {
+            let ip_addr = format!("{}.{}.{}.{}:{}",
+                    peer[0],
+                    peer[1],
+                    peer[2],
+                    peer[3],
+                    (peer[4] as u16) << 8 | peer[5] as u16
+            );
+            res.push(ip_addr);
+        }
+        return res;
+    }
+    fn print_peers(&self) {
+        for peer in self.get_peer_addresses() {
+            println!("{peer}");
+        }
+    }
 }
 
 struct HandShake {
