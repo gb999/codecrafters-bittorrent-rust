@@ -185,23 +185,23 @@ fn main() {
             PeerMessage::read_message(&mut stream); // Read bitfield message
             send_interested(&mut stream);
             PeerMessage::read_message(&mut stream); // Read unchoke message
-
+            println!("piece length: {}", torrent.info.piece_length);
             let mut piece_data: Vec<u8> = Vec::new(); 
             let mut remaining_bytes = torrent.info.piece_length;
             let mut block_index = 0;
             while remaining_bytes != 0 {
                 let mut block_length = 16 * 1024;
-                remaining_bytes -= block_length;
                 if remaining_bytes < 16 * 1024 {
                     block_length = remaining_bytes;
                 }
+                println!("read: {block_length}");
                 send_request_piece(&mut stream, piece_index, block_index * (16 * 1024), block_length);
                 
                 if let PeerMessage::Piece {index:_, begin:_, block} = PeerMessage::read_message(&mut stream) {
                     piece_data.extend(block);
                     // Check integrity
-                } else {panic!("Invalid response.") ; }
-
+                } //else {panic!("Invalid response.") ; }
+                remaining_bytes -= block_length;
                 block_index += 1;
             }
             fs::write(download_location, piece_data).unwrap();
@@ -219,17 +219,22 @@ enum PeerMessage {
         index: u32,
         begin: u32,
         block: Vec<u8>
-    }
+    },
+    Nothing
 }
 
 impl PeerMessage {
     fn read_message(stream: &mut TcpStream) -> Self {
         let mut message_size: [u8; 4] = [0u8; 4];
-        stream.read_exact(&mut message_size).unwrap();
+        match stream.read_exact(&mut message_size) {
+            Ok(_) => (),
+            Err(_) => return PeerMessage::Nothing,
+        };
         let message_size = u32::from_be_bytes(message_size);
         let mut buf = vec![0; message_size as usize];
         stream.read_exact(&mut buf).unwrap();
         let message_id = buf[0];
+        println!("read {message_size}");
         match message_id {
             5 => {
                 // Read and ignore payload
@@ -240,13 +245,13 @@ impl PeerMessage {
             },
             7 => {
                 let mut index = [0u8; 4];
-                index.copy_from_slice(&buf[0..4]);
+                index.copy_from_slice(&buf[1..5]);
                 let mut begin = [0u8; 4];
-                begin.copy_from_slice(&buf[4..8]);
+                begin.copy_from_slice(&buf[5..9]);
                 PeerMessage::Piece {
                     index: u32::from_be_bytes(index),
                     begin: u32::from_be_bytes(begin),
-                    block: (&buf[8..]).to_vec()
+                    block: (&buf[9..]).to_vec()
                 }
             },
             _=> panic!("Unexpected message")
