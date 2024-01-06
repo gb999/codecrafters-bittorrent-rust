@@ -172,7 +172,7 @@ fn main() {
             stream.write(&handshake.as_bytes()).unwrap();
             let mut buf = [0u8; 68];
             stream.read(&mut buf).unwrap();
-            println!("Peer ID: {:?}", hex::encode(&buf[48..]));
+            println!("Peer ID: {}", hex::encode(&buf[48..]));
         }
         _ => println!("unknown command: {}", args[1])
     } 
