@@ -1,6 +1,6 @@
 use serde_bytes::ByteBuf;
 use serde_json::{self, Map, Value, Number};
-use std::{env, str::FromStr};
+use std::{env, str::FromStr, io::{Write, Read}};
 use serde_derive::{Serialize, Deserialize};
 use sha1::{Sha1, Digest};
 
@@ -150,6 +150,29 @@ fn main() {
                 );
                 println!("{ip_addr}");
             }
+        },
+        "handshake" => { 
+            let file_path = &args[2];
+            let torrent = torrent_from_file(file_path).unwrap();
+
+            let peer_addr = &args[3];
+
+            let bytes = serde_bencode::to_bytes(&torrent.info).unwrap();
+            let info_hash = Sha1::digest(bytes);
+        
+
+            let handshake = HandShake {
+                length: [19],
+                protocol: *b"BitTorrent protocol",
+                reserved: [0; 8],
+                info_hash: info_hash.into(),
+                peer_id: [0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9]
+            };
+            let mut stream = std::net::TcpStream::connect(peer_addr).unwrap();
+            stream.write(&handshake.as_bytes()).unwrap();
+            let mut buf = [0u8; 68];
+            stream.read(&mut buf).unwrap();
+            println!("Peer ID: {:?}", hex::encode(&buf[48..]));
         }
         _ => println!("unknown command: {}", args[1])
     } 
@@ -162,4 +185,24 @@ struct TrackerResponse {
     // incomplete: u32,
     interval: u32,
     peers: ByteBuf
+}
+
+struct HandShake {
+    length: [u8; 1],
+    protocol: [u8; 19],
+    reserved: [u8; 8],
+    info_hash: [u8; 20],
+    peer_id: [u8; 20]
+}
+
+impl HandShake {
+    fn as_bytes(&self) -> Vec<u8> {
+        let mut res: Vec<u8> = Vec::with_capacity(68);
+        res.extend_from_slice(&self.length); 
+        res.extend_from_slice(&self.protocol); 
+        res.extend_from_slice(&self.reserved); 
+        res.extend_from_slice(&self.info_hash); 
+        res.extend_from_slice(&self.peer_id);
+        res
+    }
 }
