@@ -1,6 +1,6 @@
 use serde_bytes::ByteBuf;
 use serde_json::{self, Map, Value, Number};
-use std::{env, str::FromStr, io::{Write, Read, self, Error}, net::TcpStream, fs::{OpenOptions, self}};
+use std::{env, str::FromStr, io::{Write, Read, self, Error}, net::TcpStream, fs};
 use serde_derive::{Serialize, Deserialize};
 use sha1::{Sha1, Digest};
 
@@ -186,28 +186,28 @@ fn main() {
             send_interested(&mut stream);
             PeerMessage::read_message(&mut stream); // Read unchoke message
 
-
             let mut piece_data: Vec<u8> = Vec::new(); 
             let mut remaining_bytes = torrent.info.piece_length;
             let mut block_index = 0;
             while remaining_bytes != 0 {
                 let mut block_length = 16 * 1024;
+                remaining_bytes -= block_length;
                 if remaining_bytes < 16 * 1024 {
                     block_length = remaining_bytes;
                 }
                 send_request_piece(&mut stream, piece_index, block_index * (16 * 1024), block_length);
-                remaining_bytes -= block_length;
-                block_index += 1;
-
+                
                 if let PeerMessage::Piece {index:_, begin:_, block} = PeerMessage::read_message(&mut stream) {
                     piece_data.extend(block);
                     // Check integrity
                 } else {panic!("Invalid response.") ; }
+
+                block_index += 1;
             }
             fs::write(download_location, piece_data).unwrap();
            
         },
-        _ => println!("unknown command: {}", args[1])
+        _ => eprintln!("Unknown command: {}", args[1])
     } 
 }
 enum PeerMessage {
@@ -248,7 +248,7 @@ impl PeerMessage {
                     begin: u32::from_be_bytes(begin),
                     block: (&buf[8..]).to_vec()
                 }
-            }
+            },
             _=> panic!("Unexpected message")
         }
     }
