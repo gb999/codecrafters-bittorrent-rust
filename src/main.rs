@@ -63,7 +63,7 @@ fn decode_bencoded_value(encoded_value: &str) -> (Value, &str) {
     };
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct Torrent {
     announce: String,
     info: TorrentInfo,
@@ -90,7 +90,7 @@ impl Torrent {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct TorrentInfo {
     length: u32,
     name: String, 
@@ -150,12 +150,12 @@ fn perform_handshake(torrent: &Torrent, peer_addr: &String) -> TcpStream {
         peer_id: [0,0,1,1,2,2,3,3,4,4,5,5,6,6,7,7,8,8,9,9]
     };
     let mut stream = std::net::TcpStream::connect(peer_addr).unwrap();
-    stream.write(&handshake.as_bytes()).unwrap();
+    stream.write_all(&handshake.as_bytes()).unwrap();
     return stream;
 }
 fn read_peer_id(stream: &mut TcpStream) -> String {
     let mut buf = [0u8; 68];
-    stream.read(&mut buf).unwrap();
+    stream.read_exact(&mut buf).unwrap();
     hex::encode(&buf[48..])
 }
 fn handshake(file_path: &String, peer_addr: &String) {
@@ -185,56 +185,56 @@ fn main() {
             PeerMessage::read_message(&mut stream); // Read bitfield message
             send_interested(&mut stream);
             PeerMessage::read_message(&mut stream); // Read unchoke message
-            println!("piece length: {}", torrent.info.piece_length);
+
             let mut piece_data: Vec<u8> = Vec::new(); 
-            let mut remaining_bytes = torrent.info.piece_length;
+            let mut remaining_bytes = if piece_index < (torrent.info.pieces.len() / 20 - 1) as u32 { // a piece hash is 20 bytes in length
+                torrent.info.piece_length
+            } else {
+                let last_len = torrent.info.length % torrent.info.piece_length;
+                if last_len == 0 {
+                    torrent.info.piece_length
+                } else {
+                    last_len
+                }
+            };
             let mut block_index = 0;
+            let mut block_length = 16 * 1024; 
             while remaining_bytes != 0 {
-                let mut block_length = 16 * 1024;
-                if remaining_bytes < 16 * 1024 {
+                if remaining_bytes < block_length {
                     block_length = remaining_bytes;
                 }
-                println!("read: {block_length}");
                 send_request_piece(&mut stream, piece_index, block_index * (16 * 1024), block_length);
                 
                 if let PeerMessage::Piece {index:_, begin:_, block} = PeerMessage::read_message(&mut stream) {
                     piece_data.extend(block);
                     // Check integrity
-                } //else {panic!("Invalid response.") ; }
+                } 
                 remaining_bytes -= block_length;
                 block_index += 1;
             }
             fs::write(download_location, piece_data).unwrap();
-           
         },
         _ => eprintln!("Unknown command: {}", args[1])
     } 
 }
 enum PeerMessage {
     BitField,
-    Interested,
     Unchoke,
-    Request,
     Piece {
         index: u32,
         begin: u32,
         block: Vec<u8>
     },
-    Nothing
 }
 
 impl PeerMessage {
     fn read_message(stream: &mut TcpStream) -> Self {
         let mut message_size: [u8; 4] = [0u8; 4];
-        match stream.read_exact(&mut message_size) {
-            Ok(_) => (),
-            Err(_) => return PeerMessage::Nothing,
-        };
+        stream.read_exact(&mut message_size).unwrap();
         let message_size = u32::from_be_bytes(message_size);
         let mut buf = vec![0; message_size as usize];
         stream.read_exact(&mut buf).unwrap();
         let message_id = buf[0];
-        println!("read {message_size}");
         match message_id {
             5 => {
                 // Read and ignore payload
