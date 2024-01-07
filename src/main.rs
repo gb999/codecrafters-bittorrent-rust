@@ -89,6 +89,58 @@ impl Torrent {
         }
     }
 }
+fn download_piece(torrent: &Torrent, piece_index: u32) -> Vec<u8> {
+    let peer_addresses = get_peer_list(&torrent).get_peer_addresses();
+    let peer_address = peer_addresses.first().unwrap();
+    let mut stream = perform_handshake(&torrent, peer_address);
+    read_peer_id(&mut stream);
+    PeerMessage::read_message(&mut stream); // Read bitfield message
+    send_interested(&mut stream);
+    PeerMessage::read_message(&mut stream); // Read unchoke message
+
+    let mut piece_data: Vec<u8> = Vec::new(); 
+    let mut remaining_bytes = if piece_index < (torrent.info.pieces.len() / 20 - 1) as u32 { // a piece hash is 20 bytes in length
+        torrent.info.piece_length
+    } else {
+        let last_len = torrent.info.length % torrent.info.piece_length;
+        if last_len == 0 {
+            torrent.info.piece_length
+        } else {
+            last_len
+        }
+    };
+    let mut block_index = 0;
+    let mut block_length = 16 * 1024; 
+    while remaining_bytes != 0 {
+        if remaining_bytes < block_length {
+            block_length = remaining_bytes;
+        }
+        send_request_piece(&mut stream, piece_index, block_index * (16 * 1024), block_length);
+        
+        if let PeerMessage::Piece {index:_, begin:_, block} = PeerMessage::read_message(&mut stream) {
+            piece_data.extend(block);
+            // Check integrity
+        } 
+        remaining_bytes -= block_length;
+        block_index += 1;
+    }
+    return piece_data;
+} 
+fn download_piece_cmd(download_location: &String, file_path: &String, piece_index: u32) {
+    let torrent = Torrent::from_file(file_path).unwrap();
+    let piece_data = download_piece(&torrent, piece_index);
+    fs::write(download_location, piece_data).unwrap();
+}
+
+fn download(download_location: &String, file_path: &String) {
+    let torrent = Torrent::from_file(file_path).unwrap();
+    let mut file = fs::OpenOptions::new().append(true).create(true).open(download_location).unwrap();
+    for i in 0..torrent.info.pieces.len() / 20 {
+        let piece_data = download_piece(&torrent, i as u32);
+        file.write_all(&piece_data).unwrap();
+    } 
+}
+
 
 #[derive(Serialize, Deserialize, Debug)]
 struct TorrentInfo {
@@ -173,47 +225,8 @@ fn main() {
         "info" => info(&args[2]),
         "peers" => peers(&args[2]),
         "handshake" => handshake(&args[2], &args[3]),
-        "download_piece" => {
-            let download_location = &args[3];
-            let file_path = &args[4];
-            let piece_index: u32 = args[5].parse().unwrap();
-            let torrent = Torrent::from_file(file_path).unwrap();
-            let peer_addresses = get_peer_list(&torrent).get_peer_addresses();
-            let peer_address = peer_addresses.first().unwrap();
-            let mut stream = perform_handshake(&torrent, peer_address);
-            read_peer_id(&mut stream);
-            PeerMessage::read_message(&mut stream); // Read bitfield message
-            send_interested(&mut stream);
-            PeerMessage::read_message(&mut stream); // Read unchoke message
-
-            let mut piece_data: Vec<u8> = Vec::new(); 
-            let mut remaining_bytes = if piece_index < (torrent.info.pieces.len() / 20 - 1) as u32 { // a piece hash is 20 bytes in length
-                torrent.info.piece_length
-            } else {
-                let last_len = torrent.info.length % torrent.info.piece_length;
-                if last_len == 0 {
-                    torrent.info.piece_length
-                } else {
-                    last_len
-                }
-            };
-            let mut block_index = 0;
-            let mut block_length = 16 * 1024; 
-            while remaining_bytes != 0 {
-                if remaining_bytes < block_length {
-                    block_length = remaining_bytes;
-                }
-                send_request_piece(&mut stream, piece_index, block_index * (16 * 1024), block_length);
-                
-                if let PeerMessage::Piece {index:_, begin:_, block} = PeerMessage::read_message(&mut stream) {
-                    piece_data.extend(block);
-                    // Check integrity
-                } 
-                remaining_bytes -= block_length;
-                block_index += 1;
-            }
-            fs::write(download_location, piece_data).unwrap();
-        },
+        "download_piece" => download_piece_cmd(&args[3], &args[4], args[5].parse().unwrap()),
+        "download" => download(&args[3], &args[4]),
         _ => eprintln!("Unknown command: {}", args[1])
     } 
 }
